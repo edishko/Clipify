@@ -316,8 +316,6 @@ def main():
         time.sleep(1)
         clipify(input_video_path = temp_video_path, output_video_path = video_path)
 
-        # generate_subtitle(input_file = video_path, output_folder = title)
-    
     end_time = time.time()  # Record the end time
     print(f"Total time taken: {end_time - start_time} seconds")
     
