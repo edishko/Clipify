@@ -14,7 +14,6 @@ import json
 import math
 import pdb
 import os
-from lib import Check as check
 import glob        
 import speech_recognition as sr
 from pydub import AudioSegment
@@ -94,7 +93,7 @@ def segment_video(output_path: str, json_path: str = None, json: dict = None):
     except Exception as e:
         print(f"Error: {e}")
 
-def smooth_coordinates(current_coordinates, previous_coordinates=None, alpha=0.3):
+def smooth_coordinates(current_coordinates: (int, int), previous_coordinates: (int, int) = None, alpha: float = 0.2):
     if previous_coordinates is None:
         return current_coordinates
     else:
@@ -102,93 +101,54 @@ def smooth_coordinates(current_coordinates, previous_coordinates=None, alpha=0.3
         smoothed_y = int(alpha * current_coordinates[1] + (1 - alpha) * previous_coordinates[1])
         return smoothed_x, smoothed_y
 
-def smooth_transition(frame1, frame2, alpha=0.1):
-    return cv2.addWeighted(frame1, alpha, frame2, 1 - alpha, 0)
-
-def clipify(input_video_path, output_video_path, face_check_interval=2):
-    # Load the video clip
-    video_clip = VideoFileClip(input_video_path)
+def clipify(input_video_path: str, output_video_path: str, face_check_interval: int = 3):
+    
+    input_video = VideoFileClip(input_video_path) # Load the video clip
 
     # Get the video dimensions and fps
-    frame_width, frame_height = video_clip.size
-    fps = video_clip.fps
+    video_width, video_height = input_video.size
+    fps = input_video.fps
+    duration = input_video.duration
 
-    # Define the output resolution
-    output_width = 720  # Adjust based on your desired output resolution
-    output_height = 1280  # Adjust based on your desired output resolution
-
-    # Initialize variables
-    face_center = None
-    frame_count = 0
-
-    # Initialize a list to store video frames
-    video_frames = []
-
-    # Initialize video_clip_with_audio outside the loop
-    video_clip_with_audio = None
-
+    output_width, output_height  = 720, 1280 # Adjust based on your desired output resolution
+    
     aspect_ratio = 9 / 16
-    crop_width = int(min(frame_width, frame_height * aspect_ratio))
-    crop_height = int(min(frame_height, frame_width / aspect_ratio))
 
-    # Initialize speech recognition
-    recognizer = sr.Recognizer()
+    clip_width, clip_height = int(min(video_width, video_height * aspect_ratio)), int(min(video_height, video_width / aspect_ratio))
+    crop_x, crop_y = clip_width // 2, clip_height // 2
 
-    for index, frame in enumerate(video_clip.iter_frames(fps=fps, dtype="uint8")):
+    face_center = None # Initialize variables
+    video_frames = [] # Initialize a list to store video frames
+    
+    for index, frame in enumerate(input_video.iter_frames(fps=fps, dtype="uint8")):
         
         if index % face_check_interval == 0:
-            current_face_locations = face_recognition.face_locations(img=frame)
             
-            if current_face_locations:
-                top, right, bottom, left = current_face_locations[0]
+            face_locations = face_recognition.face_locations(img=frame)
+            
+            if face_locations:
+                
+                top, right, bottom, left = face_locations[0]
                 current_face_center = ((left + right) // 2, (top + bottom) // 2)
-                face_center = smooth_coordinates(current_face_center, face_center)
+                
+                previous_face_center = face_center
+                face_center = smooth_coordinates(current_face_center, previous_face_center)
 
-        if face_center:
-            crop_x = max(0, face_center[0] - crop_width // 2)
-            crop_y = max(0, face_center[1] - crop_height // 2)
-        else:
-            crop_x = crop_width // 2
-            crop_y = crop_height // 2
+                crop_x = max(0, face_center[0] - clip_width // 2)
+                crop_y = max(0, face_center[1] - clip_height // 2)
 
-        cropped_frame = frame[crop_y:crop_y + crop_height, crop_x:crop_x + crop_width]
+        cropped_frame = frame[crop_y:crop_y + clip_height, crop_x:crop_x + clip_width]
         resized_frame = cv2.resize(cropped_frame, (output_width, output_height))
+        finished_frame = resized_frame
 
-        if video_frames: # Resize the previous frame to match the current frame size 
-            prev_frame_resized = cv2.resize(video_frames[-1], (output_width, output_height))
-            smoothed_frame = smooth_transition(prev_frame_resized, resized_frame)
-        else: # First frame
-            smoothed_frame = resized_frame
-
-        # Perform speech-to-text on the audio of the current frame
-        audio = video_clip.audio.subclip(index / fps, (index + 1) / fps)
-        audio.export("temp_audio.wav", format="wav")
-        
-        with sr.AudioFile("temp_audio.wav") as source:
-            audio_text = recognizer.recognize_google(source)
-
-        # Overlay the text on the frame
-        cv2.putText(smoothed_frame, audio_text, (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
-
-        video_frames.append(smoothed_frame)
+        video_frames.append(finished_frame)
             
-    # Convert the list of frames to a NumPy array
-    video_array = np.array(video_frames)
-
-    # Explicitly set the audio duration to match the length of the video frames
-    audio_duration = len(video_frames) / fps
-
-    # Create an ImageSequenceClip without specifying the size
-    video_clip_with_audio = ImageSequenceClip(list(video_array), fps=fps)
-
-    # Resize the video to the desired size
-    video_clip_with_audio = video_clip_with_audio.resize(newsize=(output_width, output_height))
-
+    output_video = ImageSequenceClip(video_frames, fps=fps) # Create an ImageSequenceClip without specifying the size
+    
     # Set audio duration and write the video file
-    video_clip_with_audio.audio = video_clip.audio.subclip(0, audio_duration)
-    video_clip_with_audio = video_clip_with_audio.subclip(0, audio_duration)
-    video_clip_with_audio.write_videofile(output_video_path, codec="libx264", audio_codec="aac",
-                                           temp_audiofile="temp-audio.m4a", remove_temp=True, fps=fps)
+    output_video.audio = input_video.audio.subclip(0, duration)
+    output_video = output_video.subclip(0, duration)
+    output_video.write_videofile(output_video_path, codec = "libx264", audio_codec = "aac", temp_audiofile = "temp-audio.m4a", remove_temp = True, fps = fps)
 
 ''' Functions for retrieving and analyzing transcripts '''
 
@@ -332,6 +292,8 @@ def generate_transcript(input_file):
 ''' Main function and execution '''
 
 def main():
+    start_time = time.time()  # Record the start time
+
     # https://www.youtube.com/watch?v=DZu3VvmaX9E
     video_id = 'DZu3VvmaX9E'
     url = 'https://www.youtube.com/watch?v=' + video_id
@@ -355,6 +317,9 @@ def main():
         clipify(input_video_path = temp_video_path, output_video_path = video_path)
 
         # generate_subtitle(input_file = video_path, output_folder = title)
+    
+    end_time = time.time()  # Record the end time
+    print(f"Total time taken: {end_time - start_time} seconds")
     
 
 if __name__ == "__main__":
