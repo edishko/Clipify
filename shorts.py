@@ -1,30 +1,19 @@
 from pytube import YouTube
 from pytube.exceptions import RegexMatchError, VideoUnavailable
-
-import tiktoken
+from youtube_transcript_api import YouTubeTranscriptApi
 from openai import ChatCompletion
 from moviepy.video.io.VideoFileClip import VideoFileClip
-from youtube_transcript_api import YouTubeTranscriptApi
-
 import cv2
-import subprocess
-import openai
-import numpy as np
 import json
-import math
-import pdb
 import os
-import glob        
-import speech_recognition as sr
-from pydub import AudioSegment
-import moviepy.editor as mp
-from moviepy.editor import VideoFileClip, ImageSequenceClip, CompositeAudioClip
-import cv2
-import face_recognition
 import time
+import face_recognition
+from moviepy.editor import VideoFileClip, ImageSequenceClip
+import openai
 
 openai.api_key = ""
-"""Cell 3: Download YouTube Video function"""
+
+''' Functions for downloading videos '''
 
 def download_video(url, filename):
     try:
@@ -48,7 +37,7 @@ def download_video(url, filename):
     except Exception as e:
         print(f"An unexpected error occurred: {e}")
 
-''' Functions for segmenting videos '''
+''' Functions for segmenting and editing videos '''
 
 def segment_video(output_path: str, json_path: str = None, json: dict = None):
     """
@@ -266,29 +255,6 @@ def analyze_transcript(transcript: str, save: bool = True, chunk_size = 2000, ma
     if results is None:
         analyze_transcript(transcript, save, chunk_size, max_amount)
 
-''' Functions for subtitling videos '''
-
-def generate_subtitle(input_file, output_folder, results_folder = 'videos'):
-    command = f"auto_subtitle tmp/{input_file} -o {results_folder}/{output_folder} --model medium"
-    print (command)
-    subprocess.call(command, shell=True)
-
-def generate_transcript(input_file):
-    command = f'auto_subtitle "{input_file}" --srt_only True --output_srt True -o tmp/ --model medium'
-    subprocess.call(command, shell=True)
-    
-    # Read the contents of the input file
-    try:
-        with open(f'"{input_file.replace("mp4", "srt")}"', 'r', encoding='utf-8') as file:
-            transcript = file.read()
-    except IOError:
-        print("Error: Failed to read the input file.")
-        sys.exit(1)
-    
-    print(transcript)
-    return transcript
-
-
 ''' Main function and execution '''
 
 def main():
@@ -316,6 +282,8 @@ def main():
         time.sleep(1)
         clipify(input_video_path = temp_video_path, output_video_path = video_path)
 
+        # generate_subtitle(input_file = video_path, output_folder = title)
+    
     end_time = time.time()  # Record the end time
     print(f"Total time taken: {end_time - start_time} seconds")
     
