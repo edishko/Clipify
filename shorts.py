@@ -8,8 +8,10 @@ import json
 import os
 import time
 import face_recognition
-from moviepy.editor import VideoFileClip, ImageSequenceClip
+from moviepy.editor import VideoFileClip, ImageSequenceClip, TextClip, CompositeVideoClip
 import openai
+import whisper_timestamped as whisper
+import textwrap
 
 openai.api_key = ""
 
@@ -99,7 +101,7 @@ def clipify(input_video_path: str, output_video_path: str, face_check_interval: 
     fps = input_video.fps
     duration = input_video.duration
 
-    output_width, output_height  = 720, 1280 # Adjust based on your desired output resolution
+    output_width, output_height  = 900, 1600 # Adjust based on your desired output resolution
     
     aspect_ratio = 9 / 16
 
@@ -255,6 +257,50 @@ def analyze_transcript(transcript: str, save: bool = True, chunk_size = 2000, ma
     if results is None:
         analyze_transcript(transcript, save, chunk_size, max_amount)
 
+''' Functions for captions '''
+
+def wrap_text(text, max_chars_per_line):
+    return textwrap.fill(text, width=max_chars_per_line)
+
+def split_text_into_phrases(text, max_words_per_phrase):
+    words = text.split()
+    phrases = [words[i:i + max_words_per_phrase] for i in range(0, len(words), max_words_per_phrase)]
+    return [' '.join(phrase) for phrase in phrases]
+
+def captionize(input_video_path, output_video_path, transcript=None, max_chars_per_line=30, max_words_per_phrase=4, fontsize=70, font='Arial-Bold', stroke_color='black', stroke_width=1, position=('center', 0.6)):
+    
+    if transcript is None:
+        audio = whisper.load_audio(input_video_path)
+        model = whisper.load_model("base")
+        transcript = whisper.transcribe(model, audio, language="en", fp16=False)
+        with open(os.path.join(os.path.dirname(input_video_path), "transcript.json"), 'w') as f:
+            json.dump(transcript, f, indent=2, ensure_ascii=False)
+    
+    input_video = VideoFileClip(input_video_path)  # Load the video clip
+    
+    subtitle_clips = []
+
+    for segment in transcript['segments']:
+        start_time = segment["start"]
+        end_time = segment["end"]
+        text = segment["text"]
+
+        wrapped_text = wrap_text(text, max_chars_per_line)
+        phrases = split_text_into_phrases(wrapped_text, max_words_per_phrase)
+
+        total_duration = end_time - start_time
+
+        for phrase in phrases:
+            phrase_duration = max((total_duration / len(phrases)), 1)
+            text_clip = TextClip(phrase, fontsize=fontsize, color='white', font=font, stroke_color=stroke_color, stroke_width=stroke_width)
+            text_clip = text_clip.set_position(position, relative=True).set_start(start_time).set_end(start_time + min(phrase_duration, total_duration))
+            subtitle_clips.append(text_clip)
+            start_time += min(phrase_duration, total_duration)
+            total_duration -= min(phrase_duration, total_duration)
+
+    output_video = CompositeVideoClip([input_video] + subtitle_clips)
+    output_video.write_videofile(output_video_path, codec="libx264", audio_codec="aac")
+
 ''' Main function and execution '''
 
 def main():
@@ -270,23 +316,20 @@ def main():
     if transcript is None:
         main()
 
-    important_segments = analyze_transcript(transcript = transcript, chunk_size = 1000 )
+    important_segments = analyze_transcript(transcript = transcript, chunk_size = 1000)
 
     for segment in important_segments:
         title = f"{segment['title']}"
         
-        temp_video_path = f'videos/{title}/{title}_temp0.mp4'
+        temp_video_path = f'videos/{title}/{title}_temp.mp4'
         video_path = f'videos/{title}/{title}.mp4'
 
         segment_video(json = segment, output_path = temp_video_path)
-        time.sleep(1)
-        clipify(input_video_path = temp_video_path, output_video_path = video_path)
+        clipify(input_video_path = temp_video_path, output_video_path = temp_video_path)
+        captionize(input_video_path = temp_video_path, output_video_path = video_path)
 
-        # generate_subtitle(input_file = video_path, output_folder = title)
-    
     end_time = time.time()  # Record the end time
     print(f"Total time taken: {end_time - start_time} seconds")
     
-
 if __name__ == "__main__":
     main()
