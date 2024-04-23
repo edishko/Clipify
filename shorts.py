@@ -7,12 +7,11 @@ import cv2
 import json
 import os
 import time
-import face_recognition
 from moviepy.editor import VideoFileClip, ImageSequenceClip, TextClip, CompositeVideoClip
 import openai
 import whisper_timestamped as whisper
 import textwrap
-
+from dlib import get_frontal_face_detector
 openai.api_key = ""
 
 ''' Functions for downloading videos '''
@@ -84,7 +83,7 @@ def segment_video(output_path: str, json_path: str = None, json: dict = None):
     except Exception as e:
         print(f"Error: {e}")
 
-def smooth_coordinates(current_coordinates: (int, int), previous_coordinates: (int, int) = None, alpha: float = 0.2):
+def smooth_coordinates(current_coordinates: (int, int), previous_coordinates: (int, int) = None, alpha: float = 0.4):
     if previous_coordinates is None:
         return current_coordinates
     else:
@@ -93,9 +92,10 @@ def smooth_coordinates(current_coordinates: (int, int), previous_coordinates: (i
         return smoothed_x, smoothed_y
 
 def clipify(input_video_path: str, output_video_path: str, face_check_interval: int = 3):
-    
+    # time the VideoFileClip function
+    #to ensure it is not a bottleneck
     input_video = VideoFileClip(input_video_path) # Load the video clip
-
+    input_video = input_video.subclip(5,20) # Limit the video to the first 15 seconds for testing purposes
     # Get the video dimensions and fps
     video_width, video_height = input_video.size
     fps = input_video.fps
@@ -110,16 +110,28 @@ def clipify(input_video_path: str, output_video_path: str, face_check_interval: 
 
     face_center = None # Initialize variables
     video_frames = [] # Initialize a list to store video frames
-    
+    # detect faces with dlib
+    face_detector = get_frontal_face_detector()
     for index, frame in enumerate(input_video.iter_frames(fps=fps, dtype="uint8")):
         
         if index % face_check_interval == 0:
-            
-            face_locations = face_recognition.face_locations(img=frame)
-            
+            # detect faces
+            #turn the frame into a RGB variant with opencv
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            start_time = time.time()
+            face_locations = face_detector(frame_rgb, 0)    
+            end_time = time.time()
+            print(f"facedetector function took {end_time - start_time:.2f} seconds to execute. print {index}")
+
             if face_locations:
                 
-                top, right, bottom, left = face_locations[0]
+                # top, right, bottom, left = face_locations[0]
+                # define top right bottom and left
+                top = face_locations[0].top()
+                right = face_locations[0].right()
+                bottom = face_locations[0].bottom()
+                left = face_locations[0].left()
+                
                 current_face_center = ((left + right) // 2, (top + bottom) // 2)
                 
                 previous_face_center = face_center
@@ -128,7 +140,10 @@ def clipify(input_video_path: str, output_video_path: str, face_check_interval: 
                 crop_x = max(0, face_center[0] - clip_width // 2)
                 crop_y = max(0, face_center[1] - clip_height // 2)
 
+        start_time = time.time()
         cropped_frame = frame[crop_y:crop_y + clip_height, crop_x:crop_x + clip_width]
+        end_time = time.time()
+        print(f"cropping frame took {end_time - start_time:.2f} seconds to execute.")
         resized_frame = cv2.resize(cropped_frame, (output_width, output_height))
         finished_frame = resized_frame
 
@@ -310,23 +325,23 @@ def main():
     video_id = 'DZu3VvmaX9E'
     url = 'https://www.youtube.com/watch?v=' + video_id
     filename = 'input_video.mp4'
-    download_video(url, filename)
+    # download_video(url, filename)
 
-    transcript = get_transcript(video_id=video_id)
-    if transcript is None:
-        main()
+    # transcript = get_transcript(video_id=video_id)
+    # if transcript is None:
+    #     main()
 
-    important_segments = analyze_transcript(transcript = transcript, chunk_size = 1000)
+    # important_segments = analyze_transcript(transcript = transcript, chunk_size = 1000)
 
-    for segment in important_segments:
-        title = f"{segment['title']}"
+    # for segment in important_segments:
+    #     title = f"{segment['title']}"
         
-        temp_video_path = f'videos/{title}/{title}_temp.mp4'
-        video_path = f'videos/{title}/{title}.mp4'
+    temp_video_path = f'./input_video.mp4'
+    #     video_path = f'videos/{title}/{title}.mp4'
 
-        segment_video(json = segment, output_path = temp_video_path)
-        clipify(input_video_path = temp_video_path, output_video_path = temp_video_path)
-        captionize(input_video_path = temp_video_path, output_video_path = video_path)
+    # segment_video(json = segment, output_path = temp_video_path)
+    clipify(input_video_path = temp_video_path, output_video_path = "./result.mp4")
+    # captionize(input_video_path = temp_video_path, output_video_path = video_path)
 
     end_time = time.time()  # Record the end time
     print(f"Total time taken: {end_time - start_time} seconds")
