@@ -10,10 +10,12 @@ import time
 import face_recognition
 from moviepy.editor import VideoFileClip, ImageSequenceClip, TextClip, CompositeVideoClip
 import openai
+from openai import OpenAI
+
+client = OpenAI(api_key="")
 import whisper_timestamped as whisper
 import textwrap
 
-openai.api_key = ""
 
 ''' Functions for downloading videos '''
 
@@ -31,7 +33,7 @@ def download_video(url, filename):
             print("Downloaded video successfully!")
         else:
             print("Error: No video stream found.")
-        
+
     except RegexMatchError as e:
         print(f"Error: {e}")
     except VideoUnavailable as e:
@@ -56,10 +58,10 @@ def segment_video(output_path: str, json_path: str = None, json: dict = None):
     elif json_path:
         with open(json_path, 'r') as json_file:
             segment_info = json.load(json_file)
-    
+
     elif json:
         segment_info = json
-    
+
     try:
         # Extract information
         input_path = segment_info.get('input_path', 'input_video.mp4')
@@ -93,7 +95,7 @@ def smooth_coordinates(current_coordinates: (int, int), previous_coordinates: (i
         return smoothed_x, smoothed_y
 
 def clipify(input_video_path: str, output_video_path: str, face_check_interval: int = 3):
-    
+
     input_video = VideoFileClip(input_video_path) # Load the video clip
 
     # Get the video dimensions and fps
@@ -102,7 +104,7 @@ def clipify(input_video_path: str, output_video_path: str, face_check_interval: 
     duration = input_video.duration
 
     output_width, output_height  = 900, 1600 # Adjust based on your desired output resolution
-    
+
     aspect_ratio = 9 / 16
 
     clip_width, clip_height = int(min(video_width, video_height * aspect_ratio)), int(min(video_height, video_width / aspect_ratio))
@@ -110,18 +112,18 @@ def clipify(input_video_path: str, output_video_path: str, face_check_interval: 
 
     face_center = None # Initialize variables
     video_frames = [] # Initialize a list to store video frames
-    
+
     for index, frame in enumerate(input_video.iter_frames(fps=fps, dtype="uint8")):
-        
+
         if index % face_check_interval == 0:
-            
+
             face_locations = face_recognition.face_locations(img=frame)
-            
+
             if face_locations:
-                
+
                 top, right, bottom, left = face_locations[0]
                 current_face_center = ((left + right) // 2, (top + bottom) // 2)
-                
+
                 previous_face_center = face_center
                 face_center = smooth_coordinates(current_face_center, previous_face_center)
 
@@ -133,9 +135,9 @@ def clipify(input_video_path: str, output_video_path: str, face_check_interval: 
         finished_frame = resized_frame
 
         video_frames.append(finished_frame)
-            
+
     output_video = ImageSequenceClip(video_frames, fps=fps) # Create an ImageSequenceClip without specifying the size
-    
+
     # Set audio duration and write the video file
     output_video.audio = input_video.audio.subclip(0, duration)
     output_video = output_video.subclip(0, duration)
@@ -196,28 +198,26 @@ def analyze_transcript(transcript: str, save: bool = True, chunk_size = 2000, ma
         ]
 
         try:
-            response = openai.ChatCompletion.create(
-                model="gpt-3.5-turbo-1106",
-                messages=messages,
-                max_tokens=1000,
-                n=1,
-                stop=None,
-                functions=[
-                    {
-                        "name": "viralsection",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "viral": {
-                                    "title": "string",
-                                    "start_time": "float",
-                                    "end_time": "float",
-                                },
-                            }
+            response = client.chat.completions.create(model="gpt-3.5-turbo-1106",
+            messages=messages,
+            max_tokens=1000,
+            n=1,
+            stop=None,
+            functions=[
+                {
+                    "name": "viralsection",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "viral": {
+                                "title": "string",
+                                "start_time": "float",
+                                "end_time": "float",
+                            },
                         }
                     }
-                ]
-            )
+                }
+            ])
             temp_result = response.choices[0].message.function_call.arguments
             result = None
 
@@ -249,9 +249,9 @@ def analyze_transcript(transcript: str, save: bool = True, chunk_size = 2000, ma
                 print(f"Error parsing JSON: {e}")
                 temp_json = None
 
-        except openai.error.RateLimitError as e:
+        except openai.RateLimitError as e:
             print(f"Rate limit error: {e}")
-        except openai.error.OpenAIError as e:
+        except openai.OpenAIError as e:
             print(f"OpenAI error: {e}")
 
     if results is None:
@@ -268,16 +268,16 @@ def split_text_into_phrases(text, max_words_per_phrase):
     return [' '.join(phrase) for phrase in phrases]
 
 def captionize(input_video_path, output_video_path, transcript=None, max_chars_per_line=30, max_words_per_phrase=4, fontsize=70, font='Arial-Bold', stroke_color='black', stroke_width=1, position=('center', 0.6)):
-    
+
     if transcript is None:
         audio = whisper.load_audio(input_video_path)
         model = whisper.load_model("base")
         transcript = whisper.transcribe(model, audio, language="en", fp16=False)
         with open(os.path.join(os.path.dirname(input_video_path), "transcript.json"), 'w') as f:
             json.dump(transcript, f, indent=2, ensure_ascii=False)
-    
+
     input_video = VideoFileClip(input_video_path)  # Load the video clip
-    
+
     subtitle_clips = []
 
     for segment in transcript['segments']:
@@ -320,7 +320,7 @@ def main():
 
     for segment in important_segments:
         title = f"{segment['title']}"
-        
+
         temp_video_path = f'videos/{title}/{title}_temp.mp4'
         video_path = f'videos/{title}/{title}.mp4'
 
@@ -330,6 +330,6 @@ def main():
 
     end_time = time.time()  # Record the end time
     print(f"Total time taken: {end_time - start_time} seconds")
-    
+
 if __name__ == "__main__":
     main()
