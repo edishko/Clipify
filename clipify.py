@@ -71,6 +71,7 @@ class Video:
                 ydl.download([url])
 
     class Edit:
+
         def __init__(self, video_path: str = None, video: VideoFileClip = None):
             
             if video_path is not None and video is not None:
@@ -94,7 +95,7 @@ class Video:
             print("Segment created.")
             return segment_clip
             
-        def clip(input_video_path: str, output_video_path: str, face_check_interval: int = 1, smooth_frames_alpha: float = 0.2, smooth_coordinates_alpha: float = 0.35):
+        def clip(input_video_path: str, output_video_path: str, face_check_interval: int = 1, smooth_frames_alpha: float = 0.2, smooth_coordinates_alpha: float = 0.35, clip_aspect_ratio: float = 9 / 16, confidence_threshold: float = 0.76):
     
             def smooth_frames(current_frame: np.ndarray, previous_frame: np.ndarray = None, alpha: float = 0.1):
                 """
@@ -217,56 +218,91 @@ class Video:
                     print(f"Error in face detection: {e}")
                     return []
 
-            def frame_orientation(frame: np.ndarray, detected_faces: list, clip_shape: (int, int), previous_frame: np.ndarray = None):
+            def frame_portrait(frame: np.ndarray, detected_faces: list, clip_shape: (int, int), previous_frame: np.ndarray = None, previous_face_center: (int, int) = None, smooth_frames_alpha: float = 0.1, smooth_coordinates_alpha: float = 0.4):
                 """
-                Adjust the orientation of the frame based on the number of detected faces.
+                Process frames in portrait orientation.
 
                 Args:
                     frame (np.ndarray): Input frame.
                     detected_faces (list): List of detected face center coordinates [(x1, y1), (x2, y2), ...].
                     clip_shape (tuple): Tuple containing the width and height of the clip.
                     previous_frame (np.ndarray, optional): Previous frame for smoothing. Defaults to None.
+                    previous_face_center (tuple of int, optional): Previous coordinates of the detected face. Defaults to None.
+                    smooth_frames_alpha (float, optional): The blending factor for smoothing frames. Defaults to 0.1.
+                    smooth_coordinates_alpha (float, optional): The smoothing factor for face coordinates. Defaults to 0.4.
 
                 Returns:
-                    np.ndarray: Processed frame.
+                    tuple: Processed frame, orientation, and smoothed face center.
                 """
+                orientation = "portrait"
+
                 clip_width, clip_height = clip_shape
+                
+                if detected_faces:
+                    face_center = detected_faces[0]
+                    smoothed_face_center = smooth_coordinates(face_center, previous_face_center, smooth_coordinates_alpha)
+                
+                    crop_x = max(0, smoothed_face_center[0] - clip_width // 2)
+                    crop_y = max(0, smoothed_face_center[1] - clip_height // 2)
 
-                if len(detected_faces) >= 2:
-                    # Process frames with multiple faces
-                    landscape_clip_width = clip_width
-                    landscape_clip_height = int(clip_width * clip_width / clip_height)
-                    
-                    landscape_frame = cv2.resize(frame, (landscape_clip_width, landscape_clip_height), interpolation=cv2.INTER_LINEAR)
-                    blank_frame = np.zeros((clip_height, clip_width, 3), dtype=np.uint8)
+                elif previous_face_center is not None:
+                    smoothed_face_center = previous_face_center
 
-                    x_offset = (clip_width - landscape_clip_width) // 2
-                    y_offset = (clip_height - landscape_clip_height) // 2
-
-                    blank_frame[y_offset:y_offset + landscape_clip_height, x_offset:x_offset + landscape_clip_width] = landscape_frame
-                    finished_frame = blank_frame
-                    
-                    return finished_frame
+                    crop_x = max(0, smoothed_face_center[0] - clip_width // 2)
+                    crop_y = max(0, smoothed_face_center[1] - clip_height // 2)
 
                 else:
-                    # Process frames with single face or no face
-                    if detected_faces:
-                        face_center = detected_faces[0]
-                        crop_x = max(0, face_center[0] - clip_width // 2)
-                        crop_y = max(0, face_center[1] - clip_height // 2)
-                    else:
-                        crop_x = clip_width // 2
-                        crop_y = clip_height // 2
-                    
-                    # Crop the frame around the detected face
-                    cropped_frame = frame[crop_y:crop_y + clip_height, crop_x:crop_x + clip_width]
-                    smoothed_frame = smooth_frames(cropped_frame, previous_frame)  # Assuming smooth_frames function is defined elsewhere
-                    previous_frame = smoothed_frame.copy()
+                    smoothed_face_center = None
 
-                    # Resize cropped frame without changing aspect ratio
-                    finished_frame = cv2.resize(smoothed_frame, (clip_width, clip_height), interpolation=cv2.INTER_LINEAR)
-                    
-                    return finished_frame
+                    crop_x = clip_width // 2
+                    crop_y = clip_height // 2
+
+                # Crop the frame around the detected face if faces are detected
+                
+                cropped_frame = frame[crop_y:crop_y + clip_height, crop_x:crop_x + clip_width]
+                
+
+                smoothed_frame = smooth_frames(cropped_frame, previous_frame, smooth_frames_alpha)
+
+                # Resize cropped frame without changing aspect ratio
+                finished_frame = cv2.resize(smoothed_frame, (clip_width, clip_height), interpolation=cv2.INTER_LINEAR)
+                
+                return finished_frame, orientation, smoothed_face_center 
+
+            def frame_landscape(frame: np.ndarray, clip_shape: (int, int), previous_frame: np.ndarray = None, previous_face_center: (int, int) = None, smooth_frames_alpha: float = 0.1, smooth_coordinates_alpha: float = 0.4):
+                """
+                Process frames in landscape orientation.
+
+                Args:
+                    frame (np.ndarray): Input frame.
+                    clip_shape (tuple): Tuple containing the width and height of the clip.
+                    previous_frame (np.ndarray, optional): Previous frame for smoothing. Defaults to None.
+                    previous_face_center (tuple of int, optional): Previous coordinates of the detected face. Defaults to None.
+                    smooth_frames_alpha (float, optional): The blending factor for smoothing frames. Defaults to 0.1.
+                    smooth_coordinates_alpha (float, optional): The smoothing factor for face coordinates. Defaults to 0.4.
+
+                Returns:
+                    tuple: Processed frame, orientation, and None for smoothed face center.
+                """
+                orientation = "landscape"
+
+                clip_width, clip_height = clip_shape
+
+                # Process frames with multiple faces
+                landscape_clip_width = clip_width
+                landscape_clip_height = int(clip_width * clip_width / clip_height)
+                
+                landscape_frame = cv2.resize(frame, (landscape_clip_width, landscape_clip_height), interpolation=cv2.INTER_LINEAR)
+                blank_frame = np.zeros((clip_height, clip_width, 3), dtype=np.uint8)
+
+                x_offset = (clip_width - landscape_clip_width) // 2
+                y_offset = (clip_height - landscape_clip_height) // 2
+
+                blank_frame[y_offset:y_offset + landscape_clip_height, x_offset:x_offset + landscape_clip_width] = landscape_frame
+                smoothed_frame = smooth_frames(blank_frame, previous_frame, smooth_frames_alpha)
+                finished_frame = smoothed_frame
+                
+                return finished_frame, orientation, None
 
             # Load the input video
             input_video = VideoFileClip(input_video_path)
@@ -277,30 +313,41 @@ class Video:
             duration = input_video.duration
 
             # Determine clip dimensions
-            aspect_ratio = 9 / 16
-            clip_width, clip_height = int(video_height * aspect_ratio), video_height
+            clip_width, clip_height = int(video_height * clip_aspect_ratio), video_height
 
-            # Initialize variables
-            previous_frame = None
-            
-            video_frames = []
-            detected_faces = []
-            
             # Initialize Model
             compiled_model, input_layer, output_layer = model_init(model = "intel/face-detection-0202/FP32/face-detection-0202.xml", device = "CPU")
             print("Model initialized successfully:", compiled_model is not None)
+            
+            # Initialize variables
+            video_frames = []
+            
+            frame_orientations = []
+
+            previous_frame = None
+            previous_face_center = None
 
             # Process each frame in the input video
             for index, frame in enumerate(input_video.iter_frames(fps=fps, dtype="uint8")):
                 
                 if index % face_check_interval == 0:
-                    
-                    detected_faces = face_detection(frame = frame, input_layer = input_layer, output_layer = output_layer)
+        
+                    detected_faces = face_detection(frame = frame, input_layer = input_layer, output_layer = output_layer, confidence_threshold = confidence_threshold)
 
-                finished_frame = frame_orientation(frame = frame, detected_faces = detected_faces, clip_shape = (clip_width, clip_height), previous_frame = previous_frame)
+                if len(detected_faces) >= 2:
+                    finished_frame, orientation, smoothed_coordinates = frame_landscape(frame=frame, clip_shape=(clip_width, clip_height), previous_frame=previous_frame, smooth_frames_alpha=smooth_frames_alpha, smooth_coordinates_alpha=smooth_coordinates_alpha)   
+                
+                else:
+                    finished_frame, orientation, smoothed_coordinates = frame_portrait(frame=frame, detected_faces=detected_faces, clip_shape=(clip_width, clip_height), previous_frame=previous_frame, previous_face_center=previous_face_center, smooth_frames_alpha=smooth_frames_alpha, smooth_coordinates_alpha=smooth_coordinates_alpha)
+                
                 previous_frame = finished_frame
+                previous_face_center = smoothed_coordinates
+                
 
                 video_frames.append(finished_frame)
+                # frame_orientations.append((index, frame, orientation))
+            
+                # print((index, frame.shape, orientation))
 
             # Write the processed frames to a new video file
             output_video = ImageSequenceClip(video_frames, fps=fps)
@@ -363,9 +410,9 @@ class Video:
         pass
 
 start = time.perf_counter()
-# Video.Download.youtube(url="https://www.youtube.com/watch?v=RnjTYBhAcfA")
+# Video.Download.youtube(url="https://www.youtube.com/watch?v=1aA1WGON49E")
 # transcript = Video.Transcript.get_youtube("RnjTYBhAcfA")
-
+Video.Edit.clip("tren2.mp4", "negga3.mp4")
 # print(Video.Transcript.text(transcript))
 end = time.perf_counter()
 print(f"{end-start} Seconds!")
