@@ -15,6 +15,7 @@ import textwrap
 import dlib
 from scipy.spatial import distance as dist
 from openvino.runtime import Core
+import itertools
 
 class Video:
     
@@ -232,7 +233,7 @@ class Video:
                     smooth_coordinates_alpha (float, optional): The smoothing factor for face coordinates. Defaults to 0.4.
 
                 Returns:
-                    tuple: Processed frame, orientation, and smoothed face center.
+                    tuple: Processed frame, smoothed face center.
                 """
                 orientation = "portrait"
 
@@ -267,9 +268,9 @@ class Video:
                 # Resize cropped frame without changing aspect ratio
                 finished_frame = cv2.resize(smoothed_frame, (clip_width, clip_height), interpolation=cv2.INTER_LINEAR)
                 
-                return finished_frame, orientation, smoothed_face_center 
+                return finished_frame, smoothed_face_center 
 
-            def frame_landscape(frame: np.ndarray, clip_shape: (int, int), previous_frame: np.ndarray = None, previous_face_center: (int, int) = None, smooth_frames_alpha: float = 0.1, smooth_coordinates_alpha: float = 0.4):
+            def frame_landscape(frame: np.ndarray, clip_shape: (int, int), previous_frame: np.ndarray = None, previous_face_center: (int, int) = None, smooth_frames_alpha: float = 0, smooth_coordinates_alpha: float = 0.4):
                 """
                 Process frames in landscape orientation.
 
@@ -282,7 +283,7 @@ class Video:
                     smooth_coordinates_alpha (float, optional): The smoothing factor for face coordinates. Defaults to 0.4.
 
                 Returns:
-                    tuple: Processed frame, orientation, and None for smoothed face center.
+                    tuple: Processed frame, smoothed face center.
                 """
                 orientation = "landscape"
 
@@ -302,7 +303,29 @@ class Video:
                 smoothed_frame = smooth_frames(blank_frame, previous_frame, smooth_frames_alpha)
                 finished_frame = smoothed_frame
                 
-                return finished_frame, orientation, None
+                return finished_frame, None
+
+            def find_consecutive_frames(frame_orientations):
+                if not frame_orientations:
+                    return []
+
+                consecutive_frames = []
+                current_count = 1
+                current_orientation = frame_orientations[0][1]
+                start_index = 0
+
+                for i in range(1, len(frame_orientations)):
+                    if frame_orientations[i][1] == current_orientation:
+                        current_count += 1
+                    else:
+                        consecutive_frames.append((current_orientation, current_count, list(range(start_index, start_index + current_count))))
+                        current_orientation = frame_orientations[i][1]
+                        current_count = 1
+                        start_index = i
+
+                consecutive_frames.append((current_orientation, current_count, list(range(len(frame_orientations) - current_count, len(frame_orientations)))))
+
+                return consecutive_frames
 
             # Load the input video
             input_video = VideoFileClip(input_video_path)
@@ -316,43 +339,61 @@ class Video:
             clip_width, clip_height = int(video_height * clip_aspect_ratio), video_height
 
             # Initialize Model
-            compiled_model, input_layer, output_layer = model_init(model = "intel/face-detection-0202/FP32/face-detection-0202.xml", device = "CPU")
+            compiled_model, input_layer, output_layer = model_init(model="intel/face-detection-0202/FP32/face-detection-0202.xml", device="CPU")
             print("Model initialized successfully:", compiled_model is not None)
-            
-            # Initialize variables
-            video_frames = []
-            
-            frame_orientations = []
 
-            previous_frame = None
-            previous_face_center = None
+            # Initialize variables
+            original_video = []
+            frame_orientations = []
 
             # Process each frame in the input video
             for index, frame in enumerate(input_video.iter_frames(fps=fps, dtype="uint8")):
-                
                 if index % face_check_interval == 0:
-        
-                    detected_faces = face_detection(frame = frame, input_layer = input_layer, output_layer = output_layer, confidence_threshold = confidence_threshold)
+                    detected_faces = face_detection(frame=frame, input_layer=input_layer, output_layer=output_layer, confidence_threshold=confidence_threshold)
 
                 if len(detected_faces) >= 2:
-                    finished_frame, orientation, smoothed_coordinates = frame_landscape(frame=frame, clip_shape=(clip_width, clip_height), previous_frame=previous_frame, smooth_frames_alpha=smooth_frames_alpha, smooth_coordinates_alpha=smooth_coordinates_alpha)   
-                
+                    orientation = "landscape"
                 else:
-                    finished_frame, orientation, smoothed_coordinates = frame_portrait(frame=frame, detected_faces=detected_faces, clip_shape=(clip_width, clip_height), previous_frame=previous_frame, previous_face_center=previous_face_center, smooth_frames_alpha=smooth_frames_alpha, smooth_coordinates_alpha=smooth_coordinates_alpha)
-                
-                previous_frame = finished_frame
-                previous_face_center = smoothed_coordinates
-                
+                    orientation = "portrait"
 
-                video_frames.append(finished_frame)
-                # frame_orientations.append((index, frame, orientation))
-            
-                # print((index, frame.shape, orientation))
+                frame_orientations.append((index, orientation))
+                original_video.append(frame)
+
+            consecutive_frames = find_consecutive_frames(frame_orientations)
+
+            # Process frames efficiently
+            new_video = []
+            for orientation, count, indices in consecutive_frames:
+                duration = count / fps
+
+                # Determine the correct orientation
+                if duration < 0.5:
+                    orientation = "landscape" if orientation == "portrait" else "portrait"
+
+                # Process frames in batches
+                batch_frames = [original_video[frame_index] for frame_index in indices]
+                batch_processed_frames = []
+                
+                previous_face_center = None
+                previous_frame = None
+                
+                for frame in batch_frames:
+                    if orientation == "portrait":
+                        detected_faces = face_detection(frame=frame, input_layer=input_layer, output_layer=output_layer, confidence_threshold=confidence_threshold)
+                        finished_frame, face_center = frame_portrait(frame=frame, detected_faces=detected_faces, clip_shape=(clip_width, clip_height), previous_frame=previous_frame, previous_face_center=previous_face_center, smooth_frames_alpha=smooth_frames_alpha, smooth_coordinates_alpha=smooth_coordinates_alpha)
+                        previous_face_center = face_center
+                        previous_frame = finished_frame
+                    else:
+                        finished_frame, face_center = frame_landscape(frame=frame, clip_shape=(clip_width, clip_height), previous_frame=previous_frame, smooth_frames_alpha=smooth_frames_alpha, smooth_coordinates_alpha=smooth_coordinates_alpha)
+                        previous_frame = finished_frame
+                        
+                    batch_processed_frames.append(finished_frame)
+
+                new_video.extend(batch_processed_frames)
 
             # Write the processed frames to a new video file
-            output_video = ImageSequenceClip(video_frames, fps=fps)
-            output_video.audio = input_video.audio.subclip(0, duration)
-            output_video = output_video.subclip(0, duration)
+            output_video = ImageSequenceClip(new_video, fps=fps)
+            output_video.audio = input_video.audio
             output_video.write_videofile(output_video_path, codec="libx264", audio_codec="aac", temp_audiofile="temp-audio.m4a", remove_temp=True, fps=fps)
 
         def caption(input_video_path: str, output_video_path: str, transcript: dict = None, max_chars_per_line: int = 30, max_words_per_phrase: int = 4, fontsize: int = 70, font: str = 'Arial-Bold', stroke_color: str ='black', stroke_width: int = 1, position: tuple = ('center', 0.6)):
@@ -412,7 +453,7 @@ class Video:
 start = time.perf_counter()
 # Video.Download.youtube(url="https://www.youtube.com/watch?v=1aA1WGON49E")
 # transcript = Video.Transcript.get_youtube("RnjTYBhAcfA")
-Video.Edit.clip("tren2.mp4", "negga3.mp4")
+Video.Edit.clip("tren.mp4", "negga3.mp4")
 # print(Video.Transcript.text(transcript))
 end = time.perf_counter()
 print(f"{end-start} Seconds!")
