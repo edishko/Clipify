@@ -26,10 +26,6 @@ with open('config.json', 'r') as config:
 
 CONFIG_AI = CONFIG.get("ai")
 
-CONFIG_AI_OPENAI = CONFIG_AI.get("openai")
-CONFIG_AI_OLLAMA = CONFIG_AI.get("ollama")
-
-openai.api_key = "sk-proj-SmgNAm2kLrKi3ypIcNtaT3BlbkFJED81QlOC4sGEXIkPw7fd"
 class Video:
     
     class Transcript:
@@ -485,6 +481,10 @@ class Video:
 
             # Configure the AI method
             config_ai_method = CONFIG_AI.get(method, None)
+            api_key = config_ai_method.get("api_key", None)
+            if not None:
+                openai.api_key = api_key
+                
             if config_ai_method is None:
                 raise Exception("Invalid AI method. Choose from: {}".format(list(CONFIG_AI.keys())))
 
