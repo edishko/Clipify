@@ -1,22 +1,35 @@
 import numpy as np
 import face_recognition
 from moviepy.editor import VideoFileClip, ImageSequenceClip, AudioFileClip, TextClip, CompositeVideoClip
-import cv2
-import time
+import cv2  
+import time 
 from pytube import YouTube
 from pytube.exceptions import PytubeError
 import subprocess
-import os
+import os   
 import ffmpeg
 import yt_dlp as youtube_dl
 from youtube_transcript_api import YouTubeTranscriptApi
 import whisper
 import textwrap
-import dlib
+import dlib 
 from scipy.spatial import distance as dist
 from openvino.runtime import Core
 import itertools
+import ollama
+import openai
+import json
 
+# take configs from a file
+with open('config.json', 'r') as config:
+    CONFIG = json.load(config)
+
+CONFIG_AI = CONFIG.get("ai")
+
+CONFIG_AI_OPENAI = CONFIG_AI.get("openai")
+CONFIG_AI_OLLAMA = CONFIG_AI.get("ollama")
+
+openai.api_key = "sk-proj-SmgNAm2kLrKi3ypIcNtaT3BlbkFJED81QlOC4sGEXIkPw7fd"
 class Video:
     
     class Transcript:
@@ -43,11 +56,11 @@ class Video:
                 print(f"Youtube Transcript Error: {e}")
 
         @staticmethod
-        def text(transcript_json: dict):
+        def get_text(transcript_json: dict):
             formatted_transcript = ''
 
             # Format transcript as text
-            for entry in transcript:
+            for entry in transcript_json:
                 start_time = entry.get('start', 0)
                 start_time_str = "{:.2f}".format(start_time)
 
@@ -85,16 +98,17 @@ class Video:
             else:
                 raise ValueError("Provide either 'video_path' or 'video'.")
 
-        def crop(self, start_time: float, end_time: float = None):
+        def crop(input_video_path: str, output_video_path: str, start_time: float, end_time: float = None):
             
+            input_video = VideoFileClip(input_video_path)
             # Set the duration of the segment
             if end_time is not None:
-                segment_clip = video.subclip(start_time, end_time)
+                segment_clip = input_video.subclip(start_time, end_time)
             else:
-                segment_clip = video.subclip(start_time)
+                segment_clip = input_video.subclip(start_time)
 
             print("Segment created.")
-            return segment_clip
+            segment_clip.write_videofile(output_video_path)
             
         def clip(input_video_path: str, output_video_path: str, face_check_interval: int = 1, smooth_frames_alpha: float = 0.2, smooth_coordinates_alpha: float = 0.35, clip_aspect_ratio: float = 9 / 16, confidence_threshold: float = 0.76):
     
@@ -305,7 +319,16 @@ class Video:
                 
                 return finished_frame, None
 
-            def find_consecutive_frames(frame_orientations):
+            def find_consecutive_frames(frame_orientations: list):
+                """
+                Find consecutive frames with the same orientation.
+
+                Args:
+                    frame_orientations (list): List of tuples containing frame index and orientation.
+
+                Returns:
+                    list: List of tuples, each containing the orientation, count of consecutive frames, and indices of consecutive frames.
+                """
                 if not frame_orientations:
                     return []
 
@@ -315,86 +338,85 @@ class Video:
                 start_index = 0
 
                 for i in range(1, len(frame_orientations)):
-                    if frame_orientations[i][1] == current_orientation:
-                        current_count += 1
-                    else:
+                    if frame_orientations[i][1] != current_orientation:
                         consecutive_frames.append((current_orientation, current_count, list(range(start_index, start_index + current_count))))
                         current_orientation = frame_orientations[i][1]
                         current_count = 1
                         start_index = i
+                    else:
+                        current_count += 1
 
                 consecutive_frames.append((current_orientation, current_count, list(range(len(frame_orientations) - current_count, len(frame_orientations)))))
 
                 return consecutive_frames
-
-            # Load the input video
-            input_video = VideoFileClip(input_video_path)
-
-            # Get video properties
-            video_width, video_height = input_video.size
-            fps = input_video.fps
-            duration = input_video.duration
-
-            # Determine clip dimensions
-            clip_width, clip_height = int(video_height * clip_aspect_ratio), video_height
-
+            
             # Initialize Model
-            compiled_model, input_layer, output_layer = model_init(model="intel/face-detection-0202/FP32/face-detection-0202.xml", device="CPU")
+            compiled_model, input_layer, output_layer = model_init(model="intel/face-detection-0202/FP32/face-detection-0202.xml", device="GPU")
             print("Model initialized successfully:", compiled_model is not None)
 
-            # Initialize variables
-            original_video = []
-            frame_orientations = []
-
-            # Process each frame in the input video
-            for index, frame in enumerate(input_video.iter_frames(fps=fps, dtype="uint8")):
-                if index % face_check_interval == 0:
-                    detected_faces = face_detection(frame=frame, input_layer=input_layer, output_layer=output_layer, confidence_threshold=confidence_threshold)
-
-                if len(detected_faces) >= 2:
-                    orientation = "landscape"
-                else:
-                    orientation = "portrait"
-
-                frame_orientations.append((index, orientation))
-                original_video.append(frame)
-
-            consecutive_frames = find_consecutive_frames(frame_orientations)
-
-            # Process frames efficiently
-            new_video = []
-            for orientation, count, indices in consecutive_frames:
-                duration = count / fps
-
-                # Determine the correct orientation
-                if duration < 0.5:
-                    orientation = "landscape" if orientation == "portrait" else "portrait"
-
-                # Process frames in batches
-                batch_frames = [original_video[frame_index] for frame_index in indices]
-                batch_processed_frames = []
+            # Process the video
+            with VideoFileClip(input_video_path) as input_video:
+                fps = input_video.fps
+                duration = input_video.duration
                 
-                previous_face_center = None
-                previous_frame = None
-                
-                for frame in batch_frames:
-                    if orientation == "portrait":
+                input_width, input_height = input_video.size
+                # Determine clip dimensions
+                clip_width, clip_height = int(input_height * clip_aspect_ratio), input_height
+
+                print(clip_width, clip_height)
+                # Initialize variables
+                frame_orientations = []
+
+                # Process each frame in the input video
+                current_frame_index = 0
+                for frame in input_video.iter_frames(fps=fps, dtype="uint8"):
+                    if current_frame_index % face_check_interval == 0:
                         detected_faces = face_detection(frame=frame, input_layer=input_layer, output_layer=output_layer, confidence_threshold=confidence_threshold)
-                        finished_frame, face_center = frame_portrait(frame=frame, detected_faces=detected_faces, clip_shape=(clip_width, clip_height), previous_frame=previous_frame, previous_face_center=previous_face_center, smooth_frames_alpha=smooth_frames_alpha, smooth_coordinates_alpha=smooth_coordinates_alpha)
-                        previous_face_center = face_center
-                        previous_frame = finished_frame
+
+                    if len(detected_faces) >= 2:
+                        orientation = "landscape"
                     else:
-                        finished_frame, face_center = frame_landscape(frame=frame, clip_shape=(clip_width, clip_height), previous_frame=previous_frame, smooth_frames_alpha=smooth_frames_alpha, smooth_coordinates_alpha=smooth_coordinates_alpha)
-                        previous_frame = finished_frame
-                        
-                    batch_processed_frames.append(finished_frame)
+                        orientation = "portrait"
 
-                new_video.extend(batch_processed_frames)
+                    frame_orientations.append((current_frame_index, orientation))
+                    current_frame_index += 1
 
-            # Write the processed frames to a new video file
-            output_video = ImageSequenceClip(new_video, fps=fps)
-            output_video.audio = input_video.audio
-            output_video.write_videofile(output_video_path, codec="libx264", audio_codec="aac", temp_audiofile="temp-audio.m4a", remove_temp=True, fps=fps)
+                # Find consecutive frames
+                consecutive_frames = find_consecutive_frames(frame_orientations)
+
+                # Write the processed frames to a new video file
+                with VideoFileClip(input_video_path) as input_video:
+                    new_video = []
+                    for orientation, count, indices in consecutive_frames:
+                        duration = count / fps
+
+                        # Determine the correct orientation
+                        if duration < 0.5:
+                            orientation = "landscape" if orientation == "portrait" else "portrait"
+
+                        # Process frames in batches
+                        previous_frame = None
+                        previous_face_center = None
+                        current_frame_index = 0
+                        for frame in input_video.iter_frames(fps=fps, dtype="uint8"):
+                            if current_frame_index in indices:
+                                if orientation == "portrait":
+                                    detected_faces = face_detection(frame=frame, input_layer=input_layer, output_layer=output_layer, confidence_threshold=confidence_threshold)
+                                    finished_frame, smoothed_coordinates = frame_portrait(frame=frame, detected_faces=detected_faces, clip_shape=(clip_width, clip_height), previous_frame = previous_frame, previous_face_center = previous_face_center, smooth_frames_alpha=smooth_frames_alpha, smooth_coordinates_alpha=smooth_coordinates_alpha)
+                                    previous_frame = finished_frame
+                                    previous_face_center = smoothed_coordinates
+                                else:
+                                    finished_frame, _ = frame_landscape(frame=frame, clip_shape=(clip_width, clip_height), previous_frame = previous_frame, smooth_frames_alpha=smooth_frames_alpha, smooth_coordinates_alpha=smooth_coordinates_alpha)
+                                    previous_frame = finished_frame
+
+                                new_video.append(finished_frame)
+
+                            current_frame_index += 1
+
+                    # Write the processed frames to a new video file
+                    output_video = ImageSequenceClip(new_video, fps=fps)
+                    output_video.audio = input_video.audio
+                    output_video.write_videofile(output_video_path, codec="libx264", audio_codec="aac", temp_audiofile="temp-audio.m4a", remove_temp=True, fps=fps)
 
         def caption(input_video_path: str, output_video_path: str, transcript: dict = None, max_chars_per_line: int = 30, max_words_per_phrase: int = 4, fontsize: int = 70, font: str = 'Arial-Bold', stroke_color: str ='black', stroke_width: int = 1, position: tuple = ('center', 0.6)):
             
@@ -448,12 +470,137 @@ class Video:
             output_video.write_videofile(output_video_path, codec="libx264", audio_codec="aac")
 
     class AI:
-        pass
+        def analysis(transcript: str, chunk_size: int = 1000, method: str = "openai", max_amount: int = 1):
+            """
+            Analyze the transcript for viral content.
+
+            Parameters:
+            - transcript (str): Formatted transcript.
+            - save (bool): Save results to files.
+            - max_amount (int): Maximum number of viral sections to find.
+
+            Returns:
+            - list: List of viral content results.
+            """
+
+            # Configure the AI method
+            config_ai_method = CONFIG_AI.get(method, None)
+            if config_ai_method is None:
+                raise Exception("Invalid AI method. Choose from: {}".format(list(CONFIG_AI.keys())))
+
+            # Split the transcript into chunks
+            transcript_chunks = [transcript[i:i + chunk_size] for i in range(0, len(transcript), chunk_size)]
+            results = []
+
+            methods = \
+            {
+                "openai": lambda messages: openai.ChatCompletion.create(model = config_ai_method.get("model"), messages = messages, max_tokens = config_ai_method.get("max_tokens", None), stop = config_ai_method.get("dtop", None), functions = config_ai_method.get("functions", None)).choices[0].message.function_call.arguments,
+                "ollama": lambda messages: ollama.Client(host = config_ai_method.get("host")).chat(model = config_ai_method.get("model"), messages = prompt, format = config_ai_method.get("format", None))['message']['content']
+            }
+
+            for chunk in transcript_chunks:
+                prompt = f"This is a transcript of a video. Please identify the most viral section from the whole, must be more than 30 seconds in duration. Make sure you provide extremely accurate timestamps. Here is the Transcription:\n{chunk}"
+                messages = \
+                [
+                    {"role": "system", "content": f"{config_ai_method.get('system_content')} {config_ai_method.get('response_template')}"},
+                    {"role": "user", "content": prompt}
+                ]
+
+                try:
+                    # Call the Ollama API to generate a response
+                    response = methods.get(method, lambda messages: None)(messages)
+
+                    structure_check = Tools.JSON.check_json_structure(response, config_ai_method.get('response_template'))
+                    print(response, structure_check)
+                    if structure_check:
+                        if len(results) >= max_amount:
+                            break
+
+                        results.append(json.loads(response))
+                               
+                except ollama.ResponseError as e:
+                    print(f"Ollama response error: {e}")
+
+                except openai.error.RateLimitError as e:
+                    print(f"Rate limit error: {e}")
+
+                except openai.error.OpenAIError as e:
+                    print(f"OpenAI error: {e}")
+
+                except Exception as e:
+                    print(f"Error: {e}")
+
+            return results
+
+class Tools:
+
+    class JSON:
+        def check_json_structure(json_obj, template):
+            """
+            Check if the JSON object matches the specified template.
+
+            Args:
+                json_obj (dict): JSON object to be checked.
+                template (dict): Template JSON object representing the expected structure.
+
+            Returns:
+                bool: True if the JSON object matches the template, False otherwise.
+            """
+            if isinstance(json_obj, dict) and isinstance(template, dict):
+                for key, value in template.items():
+                    if key not in json_obj or not check_json_structure(json_obj[key], value):
+                        return False
+                return True
+            elif isinstance(json_obj, list) and isinstance(template, list):
+                if len(json_obj) != len(template):
+                    return False
+                for i in range(len(json_obj)):
+                    if not check_json_structure(json_obj[i], template[i]):
+                        return False
+                return True
+            else:
+                return True  # Scalars or other types always match
+
 
 start = time.perf_counter()
-# Video.Download.youtube(url="https://www.youtube.com/watch?v=1aA1WGON49E")
-# transcript = Video.Transcript.get_youtube("RnjTYBhAcfA")
-Video.Edit.clip("tren.mp4", "negga3.mp4")
-# print(Video.Transcript.text(transcript))
+
+youtube_id = "5VV6t5AWbAQ"
+url = f"https://www.youtube.com/watch?v={youtube_id}"
+
+# Get video title
+video_info = youtube_dl.YoutubeDL({}).extract_info(url, download=False)
+video_title = video_info.get("title", None)
+
+Video.Download.youtube(url)
+# Release unneeded data
+del video_info
+
+# Extract segment information
+transcript_json = Video.Transcript.get_youtube(youtube_id)
+transcript = Video.Transcript.get_text(transcript_json)
+segments = Video.AI.analysis(transcript)
+segment = segments[0].get("viral", None)
+segment_start_time = segment.get("start_time", None)
+segment_end_time = segment.get("end_time", None)
+segment_title = segment.get("title", None)
+
+# Release unneeded data
+del transcript_json
+del transcript
+del segments
+
+# Crop the video segment
+input_video_path = f"{video_title}.mp4"
+output_segment_path = f"{segment_title}_segment.mp4"
+Video.Edit.crop(input_video_path, output_segment_path, segment_start_time, segment_end_time)
+
+# Release unneeded data
+del segment_start_time
+del segment_end_time
+
+# Clip the cropped segment
+output_video_path = f"{segment_title}_clip.mp4"
+Video.Edit.clip(output_segment_path, output_video_path)
+
 end = time.perf_counter()
-print(f"{end-start} Seconds!")
+print(f"Total time: {end - start} seconds")
