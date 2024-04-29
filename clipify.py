@@ -493,7 +493,7 @@ class Video:
                     output_video.write_videofile(output_video_path, codec="libx264", audio_codec="aac", temp_audiofile="temp-audio.m4a", remove_temp=True, fps=fps)
 
         @staticmethod
-        def caption(input_video_path: str, output_video_path: str, transcript: dict = None, max_chars_per_line: int = 30, max_words_per_phrase: int = 4, fontsize: int = 70, font: str = 'Arial-Bold', stroke_color: str ='black', stroke_width: int = 1, position: tuple = ('center', 0.6)):
+        def caption(input_video_path: str, output_video_path: str, transcript: dict = None, max_chars_per_line: int = 30, max_words_per_phrase: int = 4, fontsize: int = 40, font: str = 'Komika-Axis', stroke_color: str ='black', stroke_width: int = 1, position: tuple = ('center', 0.6)):
             
             def wrap_text(text: str, max_chars_per_line: int, max_width: int):
                 lines = textwrap.wrap(text, width=max_chars_per_line)
@@ -584,11 +584,14 @@ class Tools:
                 "openai": lambda messages: openai.ChatCompletion.create(model=config_ai_method.get("model"), messages=messages, max_tokens=config_ai_method.get("max_tokens", None), stop=config_ai_method.get("dtop", None), functions=config_ai_method.get("functions", None)).choices[0].message.function_call.arguments,
                 "ollama": lambda messages: ollama.Client(host=config_ai_method.get("host")).chat(model=config_ai_method.get("model"), messages=prompt, format=config_ai_method.get("format", None))['message']['content']
             }
+            
+            response_template = config_ai_method.get('response_template')
+            system_content = config_ai_method.get('system_content')
 
             for chunk in transcript_chunks:
                 prompt = f"This is a transcript of a video. Please identify the most viral section from the whole, must be more than 30 seconds in duration. Make sure you provide extremely accurate timestamps. Here is the Transcription:\n{chunk}"
                 messages = [
-                    {"role": "system", "content": f"{config_ai_method.get('system_content')} {config_ai_method.get('response_template')}"},
+                    {"role": "system", "content": f"{system_content} {response_template}"},
                     {"role": "user", "content": prompt}
                 ]
 
@@ -599,12 +602,13 @@ class Tools:
                     
                     # Call the AI method to generate a response
                     response = methods.get(method, lambda messages: None)(messages)
-
-                    # Check if the response structure is correct
-                    structure_check = JSON.check_json_structure(response, config_ai_method.get('response_template'))
-                    print(response, structure_check)
-                    if structure_check:
-                        results.append(json.loads(response))
+                    response_json = json.loads(response)
+                    
+                    response_json_keys = Tools.JSON.all_keys(response_json)
+                    response_template_keys = Tools.JSON.all_keys(response_template)
+                    
+                    if response_json_keys == response_template_keys:
+                        results.append(response_json)
 
                 except ollama.ResponseError as e:
                     print(f"Ollama response error: {e}")
@@ -624,40 +628,20 @@ class Tools:
         """
         Helper class for JSON-related operations.
         """
-        def check_json_structure(obj_1, obj_2):
+        @staticmethod
+        def all_keys(dictionary: dict):
             """
-            Check if the JSON object matches the specified template.
-
-            Args:
-                obj_1 (dict): JSON object to be checked.
-                obj_2 (dict): JSON object representing the expected structure.
-
-            Returns:
-                bool: True if the JSON objects match, False otherwise.
+            Get all keys of a dictionary.
             """
-            if type(obj1) != type(obj2):
-                return False
+            keys = []
+            for key, value in dictionary.items():
+                keys.append(key)
+                if isinstance(value, dict):
+                    nested_keys = Tools.JSON.all_keys(value)
+                    for nested_key in nested_keys:
+                        keys.append(key + '.' + nested_key)
+            return keys
 
-            if isinstance(obj1, dict):
-                if len(obj1) != len(obj2):
-                    return False
-                for key in obj1:
-                    if key not in obj2:
-                        return False
-                    if not match_structure(obj1[key], obj2[key]):
-                        return False
-                return True
-
-            if isinstance(obj1, list):
-                if len(obj1) != len(obj2):
-                    return False
-                for i in range(len(obj1)):
-                    if not match_structure(obj1[i], obj2[i]):
-                        return False
-                return True
-
-            # Add other types as needed
-            return True  # Scalars or other types can always match
 
 def main():
     start_time = time.perf_counter()
@@ -671,7 +655,8 @@ def main():
     input_video_path = f"{video_title}.mp4"
 
     # Download the video
-    Video.Download.youtube(youtube_url)
+    if not os.path.isfile(input_video_path):
+        Video.Download.youtube(youtube_url)
 
     # Extract segment information
     transcript_json = Video.Transcript.get_youtube(youtube_id)
@@ -695,8 +680,8 @@ def main():
 
         # Clip the cropped segment
         input_clip_path, output_clip_path = output_segment_path, f"{segment_title}_clip.mp4"
-        Video.Edit.clip(output_segment_path, output_video_path)
-
+        Video.Edit.clip(input_clip_path, output_clip_path)
+        
     end_time = time.perf_counter()
     print(f"Total time: {end_time - start_time} seconds!")
 
