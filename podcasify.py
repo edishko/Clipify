@@ -493,20 +493,23 @@ class Video:
                     output_video.write_videofile(output_video_path, codec="libx264", audio_codec="aac", temp_audiofile="temp-audio.m4a", remove_temp=True, fps=fps)
 
         @staticmethod
-        def caption(input_video_path: str, output_video_path: str, transcript: dict = None, max_chars_per_line: int = 30, max_words_per_phrase: int = 4, fontsize: int = 40, font: str = 'Komika-Axis', stroke_color: str ='black', stroke_width: int = 1, position: tuple = ('center', 0.6)):
+        def caption(input_video_path: str, output_video_path: str, transcript: dict = None, max_chars_per_line: int = 20, max_words_per_phrase: int = 4, fontsize: int = 40, font: str = 'Komika-Axis', stroke_color: str ='black', stroke_width: int = 1, position: tuple = ('center', 0.6)):
             
-            def wrap_text(text: str, max_chars_per_line: int, max_width: int):
-                lines = textwrap.wrap(text, width=max_chars_per_line)
-                wrapped_lines = []
+            def wrap_text(text: str, max_chars_per_line: int):
+                lines = []
+                current_line = ''
 
-                for line in lines:
-                    if len(line) > max_width:
-                        # If the line is longer than the maximum width, wrap it further
-                        wrapped_lines.extend(textwrap.wrap(line, width=max_width))
+                for word in text.split():
+                    if len(current_line) + len(word) <= max_chars_per_line:
+                        current_line += ' ' + word if current_line else word
                     else:
-                        wrapped_lines.append(line)
+                        lines.append(current_line.strip())
+                        current_line = word
 
-                return '\n'.join(wrapped_lines)
+                if current_line:
+                    lines.append(current_line.strip())
+
+                return '\n'.join(lines)
 
             def split_text_into_phrases(text: str, max_words_per_phrase: int):
                 words = text.split()
@@ -528,7 +531,7 @@ class Video:
                 end_time = segment["end"]
                 text = segment["text"]
 
-                wrapped_text = wrap_text(text, max_chars_per_line, max_width)
+                wrapped_text = wrap_text(text, max_chars_per_line)
                 phrases = split_text_into_phrases(wrapped_text, max_words_per_phrase)
 
                 total_duration = end_time - start_time
@@ -644,28 +647,31 @@ class Tools:
 
 
 def main():
-    start_time = time.perf_counter()
 
-    youtube_id = "aMcjxSThD54"
+    video_folder = "videos"
+
+    youtube_id = "zFQgxro1kZo"
     youtube_url = f"https://www.youtube.com/watch?v={youtube_id}"
 
     # Get video title
     video_info = youtube_dl.YoutubeDL({}).extract_info(youtube_url, download=False)
     video_title = video_info.get("title", None)
-    input_video_path = f"{video_title}.mp4"
+    input_video_path = f"{video_folder}/{video_title}.mp4"
 
     # Download the video
     if not os.path.isfile(input_video_path):
-        Video.Download.youtube(youtube_url)
+        Video.Download.youtube(youtube_url, input_video_path)
 
     # Extract segment information
     transcript_json = Video.Transcript.get_youtube(youtube_id)
     transcript = Video.Transcript.get_text(transcript_json)
 
-    # Get the viral segments
-    segments = Tools.AI.analysis(transcript)
+    # Get the viral segment
+    segments = Tools.AI.analysis(transcript = transcript, max_amount = 1)
 
     for segment in segments:
+        start_time = time.perf_counter()
+        
         # Get viral segment
         viral_segment = segment.get("viral", None)
 
@@ -674,16 +680,25 @@ def main():
         segment_end_time = viral_segment.get("end_time", None)
         segment_title = viral_segment.get("title", None)
 
+        segment_folder = f"/{segment_title}"
+        os.makedirs(f"{video_folder}{segment_folder}", exist_ok=True)
+        
         # Crop the video segment
-        input_segment_path, output_segment_path = input_video_path, f"{segment_title}_segment.mp4"
+        input_segment_path, output_segment_path = input_video_path, f"{video_folder}{segment_folder}/{segment_title}_segment.mp4"
         Video.Edit.crop(input_segment_path, output_segment_path, segment_start_time, segment_end_time)
 
         # Clip the cropped segment
-        input_clip_path, output_clip_path = output_segment_path, f"{segment_title}_clip.mp4"
+        input_clip_path, output_clip_path = output_segment_path, f"{video_folder}{segment_folder}/{segment_title}_clip.mp4"
         Video.Edit.clip(input_clip_path, output_clip_path)
-        
-    end_time = time.perf_counter()
-    print(f"Total time: {end_time - start_time} seconds!")
 
+        input_caption_path, output_caption_path = output_clip_path, f"{video_folder}{segment_folder}/{segment_title}_caption.mp4"
+        Video.Edit.caption(input_caption_path, output_caption_path)
+
+        end_time = time.perf_counter()
+        print(f"Time for {segment_title}: {end_time - start_time} seconds!")
+
+"""
+Executes the main functionality of the clipify application when the script is run directly.
+"""
 if __name__ == "__main__":
     main()
